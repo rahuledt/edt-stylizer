@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/stylize.js": {
+      "maxDuration": 120
+    }
+  }
+}
