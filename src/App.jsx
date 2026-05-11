@@ -1,19 +1,22 @@
 import React, { useState, useRef } from 'react';
 import { Upload, Download, Sparkles, Image as ImageIcon, AlertCircle, RotateCcw } from 'lucide-react';
 
-const STYLE_PROMPT = `Transform this photograph into a painterly anime-style illustration with these exact characteristics:
+const STYLE_PROMPT = `Transform this photograph into a painterly illustration in a specific anime-influenced fine-art style.
 
-- Thick, visible oil-paint brushwork with confident impressionist strokes
-- Warm, sun-soaked color palette: golden yellows, soft creams, dusty teals, muted sage greens, terracotta accents
-- Strong directional sunlight casting long warm shadows across the scene
-- Soft anime-adjacent character rendering: gentle features, painterly hair, no harsh outlines
-- Lived-in domestic intimacy and quiet atmosphere
-- Subtle film-grain texture, slight color bleeding at edges
-- Composition feels hand-painted, not digital or photorealistic
-- Plants, sunlight on tiled or wooden surfaces, and warm interior light wherever they fit naturally
-- Anime/illustration style, NOT photorealistic
+Style direction:
+- Thick, visible oil-paint brushwork. Confident impressionist strokes, no smooth digital gradients.
+- Warm sun-soaked palette: golden yellows, soft creams, dusty teals, muted sage greens, occasional terracotta accents. Balance warm and cool tones — do not let orange dominate.
+- Strong directional sunlight casting long warm shadows.
+- Soft anime sensibility in the rendering — gentle, painterly features — but DO NOT use generic anime conventions like oversized eyes, idealized faces, or smooth doll-like skin.
+- Lived-in domestic intimacy. Quiet, contemplative atmosphere.
+- The finish should look hand-painted on canvas, not digital, not photorealistic.
 
-Preserve the subject's identity, pose, clothing, and the overall scene composition. Restyle the rendering, not the content.`;
+Critical identity rules:
+- Preserve the subject's EXACT facial features: face shape, eye shape and spacing, nose, mouth, jawline, ethnicity, skin tone, hair texture and color, body proportions, and approximate age. The person in the output must clearly be the same person as in the input.
+- Do not slim, idealize, westernize, or beautify the subject. Render their actual features faithfully, just in this painterly style.
+- Preserve their exact pose, clothing, and the surrounding scene composition.
+
+You are restyling the rendering. You are not redesigning the person.`;
 
 export default function App() {
   const [sourceFile, setSourceFile] = useState(null);
@@ -23,8 +26,6 @@ export default function App() {
   const [error, setError] = useState('');
   const [customPrompt, setCustomPrompt] = useState(STYLE_PROMPT);
   const [showPromptEditor, setShowPromptEditor] = useState(false);
-  const [size, setSize] = useState('1024x1024');
-  const [quality, setQuality] = useState('high');
   const fileInputRef = useRef(null);
 
   const handleFileSelect = (e) => {
@@ -34,8 +35,8 @@ export default function App() {
       setError('Please upload an image file');
       return;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      setError('Image must be under 20MB');
+    if (file.size > 15 * 1024 * 1024) {
+      setError('Image must be under 15MB');
       return;
     }
     setError('');
@@ -52,54 +53,51 @@ export default function App() {
     if (file) handleFileSelect({ target: { files: [file] } });
   };
 
-  // Normalize any uploaded image into a clean PNG matching the target size.
-  // gpt-image-1's /edits endpoint is strict about format — converting in-browser
-  // sidesteps "Invalid image file" errors from HEIC, odd JPEGs, alpha channels, etc.
-  // It also crops/fits the image to match the selected output dimensions so the
-  // subject framing is predictable.
-  const normalizeToPng = (file, targetSize) => {
-    const [tw, th] = targetSize.split('x').map(Number);
+  // Normalize the uploaded image into a clean PNG, max 1536px on the long edge.
+  // Gemini accepts JPG/PNG/WebP, but downscaling cuts the base64 payload size
+  // dramatically and produces faster, cheaper generations.
+  const normalizeImage = (file) => {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
       img.onload = () => {
         URL.revokeObjectURL(url);
-        // Center-crop the source to match the target aspect ratio, then scale to fit.
-        const targetAspect = tw / th;
-        const sourceAspect = img.width / img.height;
-        let sx, sy, sw, sh;
-        if (sourceAspect > targetAspect) {
-          // Source wider than target — crop sides
-          sh = img.height;
-          sw = sh * targetAspect;
-          sx = (img.width - sw) / 2;
-          sy = 0;
-        } else {
-          // Source taller than target — crop top/bottom
-          sw = img.width;
-          sh = sw / targetAspect;
-          sx = 0;
-          sy = (img.height - sh) / 2;
+        const maxEdge = 1536;
+        let w = img.width;
+        let h = img.height;
+        if (Math.max(w, h) > maxEdge) {
+          const scale = maxEdge / Math.max(w, h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
         }
         const canvas = document.createElement('canvas');
-        canvas.width = tw;
-        canvas.height = th;
+        canvas.width = w;
+        canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, tw, th);
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, tw, th);
-        canvas.toBlob((blob) => {
-          if (!blob) {
-            reject(new Error('Could not convert image'));
-            return;
-          }
-          const pngFile = new File([blob], 'source.png', { type: 'image/png' });
-          resolve(pngFile);
-        }, 'image/png');
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              reject(new Error('Could not convert image'));
+              return;
+            }
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const dataUrl = reader.result;
+              const base64 = dataUrl.split(',')[1];
+              resolve({ base64, mimeType: 'image/png' });
+            };
+            reader.onerror = () => reject(new Error('Could not read converted image'));
+            reader.readAsDataURL(blob);
+          },
+          'image/png'
+        );
       };
       img.onerror = () => {
         URL.revokeObjectURL(url);
-        reject(new Error('Could not read image — try a different file (PNG or JPG)'));
+        reject(new Error('Could not read image — try a different file'));
       };
       img.src = url;
     });
@@ -112,21 +110,16 @@ export default function App() {
     setResultImage(null);
 
     try {
-      const pngFile = await normalizeToPng(sourceFile, size);
+      const { base64, mimeType } = await normalizeImage(sourceFile);
 
-      const formData = new FormData();
-      formData.append('model', 'gpt-image-1');
-      formData.append('image', pngFile);
-      formData.append('prompt', customPrompt);
-      formData.append('size', size);
-      formData.append('quality', quality);
-      formData.append('n', '1');
-
-      // Calls our own serverless function, not OpenAI directly.
-      // The function lives at /api/stylize and forwards to OpenAI server-side.
       const response = await fetch('/api/stylize', {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64,
+          mimeType,
+          prompt: customPrompt,
+        }),
       });
 
       const data = await response.json();
@@ -135,9 +128,8 @@ export default function App() {
         throw new Error(data?.error || `Request failed: ${response.status}`);
       }
 
-      const b64 = data?.data?.[0]?.b64_json;
-      if (!b64) throw new Error('No image returned');
-      setResultImage(`data:image/png;base64,${b64}`);
+      if (!data.imageBase64) throw new Error('No image returned');
+      setResultImage(`data:${data.mimeType || 'image/png'};base64,${data.imageBase64}`);
     } catch (err) {
       setError(err.message || 'Something went wrong');
     } finally {
@@ -165,20 +157,17 @@ export default function App() {
     <div className="min-h-screen bg-stone-50 text-stone-900">
       <div className="max-w-6xl mx-auto px-6 py-8">
 
-        {/* Header */}
         <div className="mb-8 flex items-center justify-between">
           <div>
             <div className="text-xs tracking-widest text-stone-500 mb-1">EDT — INTERNAL TOOLS</div>
             <h1 className="text-2xl font-medium">Style Transfer</h1>
             <p className="text-sm text-stone-600 mt-1">Photo → painterly anime, in the EDT visual language</p>
           </div>
-          <div className="text-xs text-stone-400">v0.3 · gpt-image-1</div>
+          <div className="text-xs text-stone-400">v0.4 · nano-banana</div>
         </div>
 
-        {/* Main grid */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
 
-          {/* Source */}
           <div className="bg-white border border-stone-200 rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="text-sm font-medium">Source photo</div>
@@ -198,7 +187,7 @@ export default function App() {
               >
                 <Upload size={28} className="text-stone-400 mb-3" />
                 <div className="text-sm text-stone-600">Click or drop a photo</div>
-                <div className="text-xs text-stone-400 mt-1">PNG, JPG, WebP · up to 20MB</div>
+                <div className="text-xs text-stone-400 mt-1">PNG, JPG, WebP · up to 15MB</div>
               </div>
             ) : (
               <div className="rounded-lg overflow-hidden bg-stone-100 aspect-square">
@@ -215,7 +204,6 @@ export default function App() {
             />
           </div>
 
-          {/* Result */}
           <div className="bg-white border border-stone-200 rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="text-sm font-medium">Stylized output</div>
@@ -231,7 +219,7 @@ export default function App() {
                 <div className="text-center">
                   <div className="inline-block w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin mb-3"></div>
                   <div className="text-sm text-stone-600">Painting your photo</div>
-                  <div className="text-xs text-stone-400 mt-1">30–90 seconds</div>
+                  <div className="text-xs text-stone-400 mt-1">10–20 seconds</div>
                 </div>
               ) : resultImage ? (
                 <img src={resultImage} alt="stylized" className="w-full h-full object-cover" />
@@ -245,41 +233,18 @@ export default function App() {
           </div>
         </div>
 
-        {/* Controls */}
         <div className="bg-white border border-stone-200 rounded-xl p-5 mb-6">
-          <div className="flex flex-wrap items-center gap-4 mb-4">
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-stone-500">Size</label>
-              <select
-                value={size}
-                onChange={(e) => setSize(e.target.value)}
-                className="text-sm px-3 py-1.5 border border-stone-200 rounded-md focus:outline-none focus:border-stone-400 bg-white"
-              >
-                <option value="1024x1024">Square · 1024</option>
-                <option value="1536x1024">Landscape · 1536×1024</option>
-                <option value="1024x1536">Portrait · 1024×1536</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-stone-500">Quality</label>
-              <select
-                value={quality}
-                onChange={(e) => setQuality(e.target.value)}
-                className="text-sm px-3 py-1.5 border border-stone-200 rounded-md focus:outline-none focus:border-stone-400 bg-white"
-              >
-                <option value="low">Low · fastest, ~$0.02</option>
-                <option value="medium">Medium · ~$0.06</option>
-                <option value="high">High · ~$0.19</option>
-              </select>
-            </div>
-
+          <div className="flex flex-wrap items-center gap-4">
             <button
               onClick={() => setShowPromptEditor(!showPromptEditor)}
               className="text-xs text-stone-500 hover:text-stone-900 underline underline-offset-2"
             >
               {showPromptEditor ? 'Hide' : 'Edit'} style prompt
             </button>
+
+            <div className="text-xs text-stone-400">
+              Output aspect matches input · ~$0.04 per generation
+            </div>
 
             <div className="ml-auto">
               <button
@@ -299,7 +264,7 @@ export default function App() {
               <textarea
                 value={customPrompt}
                 onChange={(e) => setCustomPrompt(e.target.value)}
-                rows={10}
+                rows={14}
                 className="w-full px-3 py-2 text-xs font-mono border border-stone-200 rounded-lg focus:outline-none focus:border-stone-400 leading-relaxed"
               />
               <button
@@ -320,7 +285,7 @@ export default function App() {
         )}
 
         <div className="text-xs text-stone-400 text-center pt-4 border-t border-stone-100">
-          Cost per generation depends on size and quality. Re-run if a result feels off — generations are non-deterministic.
+          Powered by Gemini 2.5 Flash Image. Re-run if a result feels off — generations are non-deterministic.
         </div>
       </div>
     </div>
