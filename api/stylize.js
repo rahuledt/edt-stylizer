@@ -15,7 +15,7 @@ export const config = {
   maxDuration: 60,
 };
 
-const MODEL = 'gemini-2.5-flash-image-preview';
+const MODEL = 'gemini-2.5-flash-image';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 export default async function handler(req, res) {
@@ -46,7 +46,7 @@ export default async function handler(req, res) {
       ],
       // Tell Gemini we want an image back, not just text
       generationConfig: {
-        responseModalities: ['IMAGE'],
+        responseModalities: ['IMAGE', 'TEXT'],
       },
     };
 
