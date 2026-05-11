@@ -52,6 +52,59 @@ export default function App() {
     if (file) handleFileSelect({ target: { files: [file] } });
   };
 
+  // Normalize any uploaded image into a clean PNG matching the target size.
+  // gpt-image-1's /edits endpoint is strict about format — converting in-browser
+  // sidesteps "Invalid image file" errors from HEIC, odd JPEGs, alpha channels, etc.
+  // It also crops/fits the image to match the selected output dimensions so the
+  // subject framing is predictable.
+  const normalizeToPng = (file, targetSize) => {
+    const [tw, th] = targetSize.split('x').map(Number);
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        // Center-crop the source to match the target aspect ratio, then scale to fit.
+        const targetAspect = tw / th;
+        const sourceAspect = img.width / img.height;
+        let sx, sy, sw, sh;
+        if (sourceAspect > targetAspect) {
+          // Source wider than target — crop sides
+          sh = img.height;
+          sw = sh * targetAspect;
+          sx = (img.width - sw) / 2;
+          sy = 0;
+        } else {
+          // Source taller than target — crop top/bottom
+          sw = img.width;
+          sh = sw / targetAspect;
+          sx = 0;
+          sy = (img.height - sh) / 2;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = tw;
+        canvas.height = th;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, tw, th);
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, tw, th);
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            reject(new Error('Could not convert image'));
+            return;
+          }
+          const pngFile = new File([blob], 'source.png', { type: 'image/png' });
+          resolve(pngFile);
+        }, 'image/png');
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Could not read image — try a different file (PNG or JPG)'));
+      };
+      img.src = url;
+    });
+  };
+
   const stylize = async () => {
     if (!sourceFile) return;
     setLoading(true);
@@ -59,9 +112,11 @@ export default function App() {
     setResultImage(null);
 
     try {
+      const pngFile = await normalizeToPng(sourceFile, size);
+
       const formData = new FormData();
       formData.append('model', 'gpt-image-1');
-      formData.append('image', sourceFile);
+      formData.append('image', pngFile);
       formData.append('prompt', customPrompt);
       formData.append('size', size);
       formData.append('quality', quality);
@@ -117,7 +172,7 @@ export default function App() {
             <h1 className="text-2xl font-medium">Style Transfer</h1>
             <p className="text-sm text-stone-600 mt-1">Photo → painterly anime, in the EDT visual language</p>
           </div>
-          <div className="text-xs text-stone-400">v0.2 · gpt-image-1</div>
+          <div className="text-xs text-stone-400">v0.3 · gpt-image-1</div>
         </div>
 
         {/* Main grid */}
